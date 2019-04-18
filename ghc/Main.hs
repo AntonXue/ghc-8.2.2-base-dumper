@@ -74,6 +74,10 @@ import Data.Char
 import Data.List
 import Data.Maybe
 
+-- <anton>
+-- import G2
+-- </anton>
+
 -----------------------------------------------------------------------------
 -- ToDo:
 
@@ -718,6 +722,25 @@ doMake srcs  = do
 
     when (failed ok_flag) (liftIO $ exitWith (ExitFailure 1))
     return ()
+
+
+-- <anton>
+-- This injection here is okay because the preceding is a when expression.
+-- This particular injection allows us to use the ghc-stage2 executable
+-- to dump the G2 core of whatever file we are compiling,
+-- e.g. "inplace/bin/ghc-stage2 Hello.hs" will dump the G2 core of Hello.hs
+    -- modGraph <- GHC.getModuleGraph
+    -- parsedMods <- mapM GHC.parseModule modGraph
+    -- typedMods <- mapM GHC.typecheckModule parsedMods
+    -- desugMods <- mapM GHC.desugarModule typedMods
+    -- let modGutss = map GHC.coreModule desugMods
+
+    -- let dumpName = show $ GHC.hscTarget dflags'
+
+    -- liftIO $ dumpG2 dumpName hsc_env modGutss
+
+    -- return ()
+-- </anton>
 
 
 -- ---------------------------------------------------------------------------

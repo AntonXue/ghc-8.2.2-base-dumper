@@ -163,6 +163,9 @@ Library
         types
         utils
         vectorise
+        -- <anton>
+        g2
+        -- </anton>
 
     Exposed-Modules:
         DriverBkp
@@ -541,6 +544,33 @@ Library
         Vectorise
         Hoopl.Dataflow
         Hoopl
+        -- <anton>
+        Control.Monad.State.Lazy
+        Data.Hashable
+        Data.HashMap
+        Data.HashMap.Lazy
+        Data.HashSet
+        Data.List.Utils
+        Text.Parsec
+        Text.ParserCombinators.Parsec
+        Text.ParserCombinators.Parsec.Language
+        Text.ParserCombinators.Parsec.Token
+        Text.Regex
+        GHC.Paths
+
+        G2
+        G2.Language.Syntax
+        G2.Language.TypeEnv
+        G2.Language.Typing
+        G2.Language.AlgDataTy
+        G2.Language.KnownValues
+        G2.Language.AST
+
+        G2.Translation.Haskell
+        G2.Translation.TransTypes
+
+
+        -- </anton>
 --        CgInfoTbls used in ghci/DebuggerUtils
 --        CgHeapery  mkVirtHeapOffsets used in ghci
 

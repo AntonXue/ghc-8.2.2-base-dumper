@@ -38,7 +38,7 @@ instance MonadIO CompPipeline where
     liftIO m = P $ \_env state -> do a <- m; return (state, a)
 
 data PhasePlus = RealPhase Phase
-               | HscOut HscSource ModuleName HscStatus
+               | HscOut HscSource ModuleName HscStatus ModDetails Dependencies
 
 instance Outputable PhasePlus where
     ppr (RealPhase p) = ppr p

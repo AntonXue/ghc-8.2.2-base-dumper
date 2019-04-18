@@ -71,6 +71,11 @@ import Data.List        ( isSuffixOf )
 import Data.Maybe
 import Data.Version
 
+-- <anton>
+import qualified Data.HashMap.Lazy as HM
+import {-# SOURCE #-} qualified G2 as G2
+-- </anton>
+
 -- ---------------------------------------------------------------------------
 -- Pre-process
 
@@ -172,8 +177,9 @@ compileOne' m_tc_result mHscMessage
             -- handled properly
             _ <- runPipeline StopLn hsc_env
                               (output_fn,
-                               Just (HscOut src_flavour
-                                            mod_name HscUpdateSig))
+                               Just (HscOut src_flavour mod_name HscUpdateSig
+                                            (hm_details hmi0)
+                                            (mi_deps $ hm_iface hmi0)))
                               (Just basename)
                               Persistent
                               (Just location)
@@ -208,7 +214,10 @@ compileOne' m_tc_result mHscMessage
             -- We're in --make mode: finish the compilation pipeline.
             _ <- runPipeline StopLn hsc_env
                               (output_fn,
-                               Just (HscOut src_flavour mod_name (HscRecomp cgguts summary)))
+                               Just (HscOut src_flavour mod_name
+                                        (HscRecomp cgguts summary)
+                                        (hm_details hmi0)
+                                        (mi_deps $ hm_iface hmi0)))
                               (Just basename)
                               Persistent
                               (Just location)
@@ -1028,13 +1037,13 @@ runPhase (RealPhase (Hsc src_flavour)) input_fn dflags0
 
   -- run the compiler!
         let msg hsc_env _ what _ = oneShotMsg hsc_env what
-        (result, _) <- liftIO $ hscIncrementalCompile True Nothing (Just msg) hsc_env'
+        (result, hmi) <- liftIO $ hscIncrementalCompile True Nothing (Just msg) hsc_env'
                             mod_summary source_unchanged Nothing (1,1)
 
-        return (HscOut src_flavour mod_name result,
+        return (HscOut src_flavour mod_name result (hm_details hmi) (mi_deps $ hm_iface hmi),
                 panic "HscOut doesn't have an input filename")
 
-runPhase (HscOut src_flavour mod_name result) _ dflags = do
+runPhase (HscOut src_flavour mod_name result hmd deps) _ dflags = do
         location <- getLocation src_flavour mod_name
         setModLocation location
 
@@ -1067,6 +1076,13 @@ runPhase (HscOut src_flavour mod_name result) _ dflags = do
                    return (RealPhase StopLn, o_file)
             HscRecomp cgguts mod_summary
               -> do output_fn <- phaseOutputFilename next_phase
+
+                    -- <anton>
+                    -- DUMP HERE
+                    let mod_name = moduleNameString $ moduleName $ ms_mod mod_summary
+                    liftIO $ G2.dumpG2 mod_name deps cgguts hmd
+
+                    -- </anton>
 
                     PipeState{hsc_env=hsc_env'} <- getPipeState
 
