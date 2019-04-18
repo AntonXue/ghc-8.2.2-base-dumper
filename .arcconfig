@@ -1,0 +1,9 @@
+{
+  "project.name"        : "ghc",
+  "repository.callsign" : "GHC",
+  "phabricator.uri"     : "https://phabricator.haskell.org",
+
+  "load": [
+    ".arc-linters/arcanist-external-json-linter"
+  ]
+}
