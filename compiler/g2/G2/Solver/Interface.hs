@@ -15,17 +15,19 @@ import qualified G2.Language.ExprEnv as E
 import G2.Solver.Converters
 import G2.Solver.Solver
 
+import Data.Maybe (catMaybes)
 import qualified Data.Map as M
 
-subModel :: State t -> ([Expr], Expr, Maybe FuncCall)
+subModel :: State t -> Bindings -> ([Expr], Expr, Maybe FuncCall)
 subModel (State { expr_env = eenv
                 , curr_expr = CurrExpr _ cexpr
-                , input_ids = is
                 , assert_ids = ais
                 , type_classes = tc
-                , model = m}) =
+                , model = m}) 
+          (Bindings {input_names = inputNames}) = 
     let
         ais' = fmap (subVarFuncCall m eenv tc) ais
+        is = catMaybes (map (E.getIdFromName eenv) inputNames)
     in
     filterTC tc $ subVar m eenv tc (map Var is, cexpr, ais')
 

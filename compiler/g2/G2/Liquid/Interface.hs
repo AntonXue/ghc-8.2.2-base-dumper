@@ -36,7 +36,6 @@ import qualified Language.Haskell.Liquid.UX.Config as LHC
 import qualified Language.Fixpoint.Types.PrettyPrint as FPP
 
 import Control.Exception
-import Data.Coerce
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Text as T
@@ -58,7 +57,7 @@ data FuncInfo = FuncInfo { func :: T.Text
 -- | findCounterExamples
 -- Given (several) LH sources, and a string specifying a function name,
 -- attempt to find counterexamples to the functions liquid type
-findCounterExamples :: FilePath -> FilePath -> T.Text -> [FilePath] -> [FilePath] -> Config -> IO ([ExecRes [FuncCall]], Lang.Id)
+findCounterExamples :: FilePath -> FilePath -> T.Text -> [FilePath] -> [FilePath] -> Config -> IO (([ExecRes [FuncCall]], Bindings), Lang.Id)
 findCounterExamples proj fp entry libs lhlibs config = do
     let config' = config { mode = Liquid }
 
@@ -77,29 +76,31 @@ findCounterExamples proj fp entry libs lhlibs config = do
 runLHCore :: T.Text -> (Maybe T.Text, Program, [ProgramType], [(Name, Lang.Id, [Lang.Id])], [Name])
                     -> [LHOutput]
                     -> Config
-                    -> IO ([ExecRes [FuncCall]], Lang.Id)
+                    -> IO (([ExecRes [FuncCall]], Bindings), Lang.Id)
 runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
-    let (init_state, ifi) = initState prog tys cls Nothing Nothing True entry mb_modname ex config
-    let cleaned_state = (markAndSweepPreserving (reqNames init_state) init_state) { type_env = type_env init_state }
+    let (init_state, ifi, bindings) = initState prog tys cls Nothing Nothing True entry mb_modname ex config
+    let (init_state', bindings') = (markAndSweepPreserving (reqNames init_state bindings) init_state bindings)
+    let cleaned_state = init_state' { type_env = type_env init_state } 
 
-    let no_part_state@(State {expr_env = np_eenv, name_gen = np_ng}) = cleaned_state
+    let (no_part_state@(State {expr_env = np_eenv})) = cleaned_state
+    let np_ng = name_gen bindings'
 
     let renme = E.keys np_eenv -- \\ nub (Lang.names (type_classes no_part_state))
     let ((meenv, mkv, mtc, mat), ng') = doRenames renme np_ng 
-            (np_eenv, known_values no_part_state, type_classes no_part_state, apply_types no_part_state)
-            
-    let ng_state = no_part_state {name_gen = ng'}
+            (np_eenv, known_values no_part_state, type_classes no_part_state, apply_types bindings')
+    
+    let ng_bindings = bindings' {name_gen = ng'}
 
-    let ng_state' = ng_state {track = []}
+    let ng_state = no_part_state {track = []}
 
-    let lh_state = createLHState meenv mkv ng_state'
+    let (lh_state, lh_bindings) = createLHState meenv mkv ng_state ng_bindings
 
-    let (cfn, merged_state) = runLHStateM (initializeLH ghci_cg ifi) lh_state
+    let (cfn, (merged_state, bindings'')) = runLHStateM (initializeLH ghci_cg ifi lh_bindings) lh_state lh_bindings
 
     let tcv = tcvalues merged_state
     let merged_state' = deconsLHState merged_state
 
-    let pres_names = reqNames merged_state' ++ names tcv ++ names mkv
+    let pres_names = reqNames merged_state' bindings'' ++ names tcv ++ names mkv
 
     let annm = annots merged_state
 
@@ -115,8 +116,8 @@ runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
     -- these lists will work, without us having to modify all of G2 to account
     -- for the LH typeclass.
     let final_st = track_state { known_values = mkv
-                               , type_classes = unionTypeClasses mtc (type_classes track_state)
-                               , apply_types = mat}
+                               , type_classes = unionTypeClasses mtc (type_classes track_state)}
+    let bindings''' = bindings'' { apply_types = mat}
 
 
     let tr_ng = mkNameGen ()
@@ -124,7 +125,7 @@ runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
 
     let (limHalt, limOrd) = limitByAccepted (cut_off config)
 
-    ret <- if higherOrderSolver config == AllFuncs
+    (ret, final_bindings) <- if higherOrderSolver config == AllFuncs
               then runG2WithSomes
                     (SomeReducer NonRedPCRed
                       <~| (case logStates config of
@@ -138,7 +139,7 @@ runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
                         :<~> SwitchEveryNHalter (switch_after config)
                         :<~> AcceptHalter))
                     (SomeOrderer limOrd)
-                    con (pres_names ++ names annm) final_st
+                    con (pres_names ++ names annm) final_st bindings''' 
               else runG2WithSomes
                     (SomeReducer (NonRedPCRed :<~| TaggerRed state_name tr_ng)
                       <~| (case logStates config of
@@ -153,7 +154,7 @@ runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
                         :<~> SwitchEveryNHalter (switch_after config)
                         :<~> AcceptHalter))
                     (SomeOrderer limOrd)
-                    con (pres_names ++ names annm) final_st
+                    con (pres_names ++ names annm) final_st bindings'''
     
     -- We filter the returned states to only those with the minimal number of abstracted functions
     let mi = case length ret of
@@ -161,24 +162,24 @@ runLHCore entry (mb_modname, prog, tys, cls, ex) ghci_cg config = do
                   _ -> minimum $ map (\(ExecRes {final_state = s}) -> length $ abstract_calls $ track s) ret
     let ret' = filter (\(ExecRes {final_state = s}) -> mi == (length $ abstract_calls $ track s)) ret
 
-    let states = map (\(ExecRes { final_state = s
+    let exec_res = map (\(ExecRes { final_state = s
                                 , conc_args = es
                                 , conc_out = e
                                 , violated = ais}) ->
                           (ExecRes { final_state = s {track = map (subVarFuncCall (model s) (expr_env s) (type_classes s)) $ abstract_calls $ track s}
                                    , conc_args = es
                                    , conc_out = e
-                                   , violated = ais })) ret'
+                                   , violated = ais})) ret'
 
     -- mapM (\(s, _, _, _) -> putStrLn . pprExecStateStr $ s) states
     -- mapM (\(_, es, e, ais) -> do print es; print e; print ais) states
 
     close con
 
-    return (states, ifi)
+    return ((exec_res, final_bindings), ifi)
 
-initializeLH :: [LHOutput] -> Lang.Id -> LHStateM Lang.Name
-initializeLH ghci_cg ifi = do
+initializeLH :: [LHOutput] -> Lang.Id -> Bindings -> LHStateM Lang.Name
+initializeLH ghci_cg ifi bindings = do
     let ghcInfos = map ghcI ghci_cg
 
     addLHTC
@@ -199,7 +200,7 @@ initializeLH ghci_cg ifi = do
     -- so we apply the simplification first
     simplify
 
-    ns <- convertCurrExpr ifi
+    ns <- convertCurrExpr ifi bindings
 
     cfn <- addCounterfactualBranch ns
 
@@ -234,11 +235,11 @@ funcSpecs fs = concatMap (gsTySigs . spec) fs -- Functions asserted in LH
 measureSpecs :: [GhcInfo] -> [Measure SpecType GHC.DataCon]
 measureSpecs = concatMap (gsMeasures . spec)
 
-reqNames :: State t -> [Name]
+reqNames :: State t -> Bindings -> [Name]
 reqNames (State { expr_env = eenv
                 , type_classes = tc
-                , known_values = kv
-                , apply_types = at }) = 
+                , known_values = kv}) 
+         (Bindings {apply_types = at}) = 
     Lang.names [ mkGe eenv
                , mkGt eenv
                , mkEq eenv
@@ -263,7 +264,7 @@ reqNames (State { expr_env = eenv
     Lang.names 
       (M.filterWithKey 
           (\k _ -> k == eqTC kv || k == numTC kv || k == ordTC kv || k == integralTC kv || k == structEqTC kv) 
-          (coerce tc :: M.Map Name Class)
+          (toMap tc)
       )
     ++ Lang.names at
 
@@ -275,8 +276,8 @@ pprint (v, r) = do
     putStrLn $ show i
     putStrLn $ show doc
 
-printLHOut :: Lang.Id -> [ExecRes [FuncCall]] -> IO ()
-printLHOut entry = printParsedLHOut . parseLHOut entry
+printLHOut :: Lang.Id -> Bindings -> [ExecRes [FuncCall]] -> IO ()
+printLHOut entry b = printParsedLHOut . parseLHOut entry b
 
 printParsedLHOut :: [LHReturn] -> IO ()
 printParsedLHOut [] = return ()
@@ -322,22 +323,22 @@ printFuncInfo :: FuncInfo -> IO ()
 printFuncInfo (FuncInfo {funcArgs = call, funcReturn = output}) =
     TI.putStrLn $ call `T.append` " = " `T.append` output
 
-parseLHOut :: Lang.Id -> [ExecRes [FuncCall]] -> [LHReturn]
-parseLHOut _ [] = []
-parseLHOut entry ((ExecRes { final_state = s
+parseLHOut :: Lang.Id -> Bindings -> [ExecRes [FuncCall]] -> [LHReturn]
+parseLHOut _ _ [] = []
+parseLHOut entry b ((ExecRes { final_state = s
                            , conc_args = inArg
                            , conc_out = ex
-                           , violated = ais }):xs) =
+                           , violated = ais}):xs) =
   let 
-      tl = parseLHOut entry xs
-      funcCall = T.pack $ mkCleanExprHaskell s 
+      tl = parseLHOut entry b xs
+      funcCall = T.pack $ mkCleanExprHaskell s b 
                . foldl (\a a' -> App a a') (Var entry) $ inArg
-      funcOut = T.pack $ mkCleanExprHaskell s $ ex
+      funcOut = T.pack $ mkCleanExprHaskell s b $ ex
 
       called = FuncInfo {func = nameOcc $ idName entry, funcArgs = funcCall, funcReturn = funcOut}
-      viFunc = fmap (parseLHFuncTuple s) ais
+      viFunc = fmap (parseLHFuncTuple s b) ais
 
-      abstr = map (parseLHFuncTuple s) $ track s
+      abstr = map (parseLHFuncTuple s b) $ track s
   in
   LHReturn { calledFunc = called
            , violating = if called `sameFuncNameArgs` viFunc then Nothing else viFunc
@@ -347,13 +348,13 @@ sameFuncNameArgs :: FuncInfo -> Maybe FuncInfo -> Bool
 sameFuncNameArgs _ Nothing = False
 sameFuncNameArgs (FuncInfo {func = f1, funcArgs = fa1}) (Just (FuncInfo {func = f2, funcArgs = fa2})) = f1 == f2 && fa1 == fa2
 
-parseLHFuncTuple :: State t -> FuncCall -> FuncInfo
-parseLHFuncTuple s (FuncCall {funcName = n, arguments = ars, returns = out}) =
+parseLHFuncTuple :: State t -> Bindings -> FuncCall -> FuncInfo
+parseLHFuncTuple s b (FuncCall {funcName = n, arguments = ars, returns = out}) =
     let
         t = case fmap typeOf $ E.lookup n (expr_env s) of
                   Just t' -> t'
                   Nothing -> error $ "Unknown type for abstracted function " ++ show n
     in
     FuncInfo { func = nameOcc n
-             , funcArgs = T.pack $ mkCleanExprHaskell s (foldl' App (Var (Id n t)) ars)
-             , funcReturn = T.pack $ mkCleanExprHaskell s out }
+             , funcArgs = T.pack $ mkCleanExprHaskell s b (foldl' App (Var (Id n t)) ars)
+             , funcReturn = T.pack $ mkCleanExprHaskell s b out }

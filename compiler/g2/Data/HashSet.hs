@@ -7,6 +7,7 @@ module Data.HashSet
   , map
   , insert
   , foldr
+  , member
   , show
   ) where
 
@@ -36,6 +37,9 @@ map f = HashSet . L.map f . get
 
 insert :: (Eq a) => a -> HashSet a -> HashSet a
 insert x = HashSet . (:) x . filter ((/=) x) . get
+
+member :: Eq a => a -> HashSet a -> Bool
+member a hs = a `elem` (toList hs)
 
 instance Foldable (HashSet) where
   foldr f z = L.foldr f z . get

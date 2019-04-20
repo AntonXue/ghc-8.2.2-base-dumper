@@ -39,28 +39,30 @@ import qualified Data.Text as T
 data State t = State { expr_env :: E.ExprEnv
                      , type_env :: TypeEnv
                      , curr_expr :: CurrExpr
-                     , name_gen :: NameGen
                      , path_conds :: PathConds -- ^ Path conditions, in SWHNF
                      , non_red_path_conds :: [Expr] -- ^ Path conditions that still need further reduction
                      , true_assert :: Bool -- ^ Have we violated an assertion?
                      , assert_ids :: Maybe FuncCall
                      , type_classes :: TypeClasses
-                     , input_ids :: InputIds
-                     , fixed_inputs :: [Expr]
                      , symbolic_ids :: SymbolicIds
-                     , func_table :: FuncInterps
-                     , deepseq_walkers :: Walkers
-                     , apply_types :: AT.ApplyTypes
                      , exec_stack :: Stack Frame
                      , model :: Model
-                     , arb_value_gen :: ArbValueGen
                      , known_values :: KnownValues
-                     , cleaned_names :: CleanedNames
                      , rules :: ![Rule]
                      , num_steps :: !Int -- Invariant: The length of the rules list
                      , tags :: S.HashSet Name -- ^ Allows attaching tags to a State, to identify it later
                      , track :: t
                      } deriving (Show, Eq, Read)
+
+data Bindings = Bindings { deepseq_walkers :: Walkers
+                         , fixed_inputs :: [Expr]
+                         , arb_value_gen :: ArbValueGen 
+                         , cleaned_names :: CleanedNames
+                         , func_table :: FuncInterps
+                         , apply_types :: AT.ApplyTypes
+                         , input_names :: [Name]
+                         , name_gen :: NameGen
+                         } deriving (Show, Eq, Read)
 
 -- | The `InputIds` are a list of the variable names passed as input to the
 -- function being symbolically executed
@@ -134,35 +136,28 @@ data Frame = CaseFrame Id [Alt]
 type Model = M.Map Name Expr
 
 -- | Replaces all of the names old in state with a name seeded by new_seed
-renameState :: Named t => Name -> Name -> State t -> State t
-renameState old new_seed s =
-    let (new, ng') = freshSeededName new_seed (name_gen s)
-    in State { expr_env = rename old new (expr_env s)
+renameState :: Named t => Name -> Name -> State t -> Bindings -> (State t, Bindings)
+renameState old new_seed s b =
+    let (new, ng') = freshSeededName new_seed (name_gen b)
+    in (State { expr_env = rename old new (expr_env s)
              , type_env =
                   M.mapKeys (\k -> if k == old then new else k)
                   $ rename old new (type_env s)
              , curr_expr = rename old new (curr_expr s)
-             , name_gen = ng'
              , path_conds = rename old new (path_conds s)
              , non_red_path_conds = rename old new (non_red_path_conds s)
              , true_assert = true_assert s
              , assert_ids = rename old new (assert_ids s)
              , type_classes = rename old new (type_classes s)
-             , input_ids = rename old new (input_ids s)
-             , fixed_inputs = rename old new (fixed_inputs s)
              , symbolic_ids = rename old new (symbolic_ids s)
-             , func_table = rename old new (func_table s)
-             , apply_types = rename old new (apply_types s)
-             , deepseq_walkers = rename old new (deepseq_walkers s)
              , exec_stack = exec_stack s
              , model = model s
-             , arb_value_gen = arb_value_gen s
              , known_values = rename old new (known_values s)
-             , cleaned_names = HM.insert new old (cleaned_names s)
              , rules = rules s
              , num_steps = num_steps s
              , track = rename old new (track s)
              , tags = tags s }
+        , b { name_gen = ng'})
 
 instance Named t => Named (State t) where
     names s = names (expr_env s)
@@ -171,16 +166,10 @@ instance Named t => Named (State t) where
             ++ names (path_conds s)
             ++ names (assert_ids s)
             ++ names (type_classes s)
-            ++ names (input_ids s)
-            ++ names (fixed_inputs s)
             ++ names (symbolic_ids s)
-            ++ names (func_table s)
-            ++ names (apply_types s)
-            ++ names (deepseq_walkers s)
             ++ names (exec_stack s)
             ++ names (model s)
             ++ names (known_values s)
-            ++ names (cleaned_names s)
             ++ names (track s)
 
     rename old new s =
@@ -189,23 +178,15 @@ instance Named t => Named (State t) where
                     M.mapKeys (\k -> if k == old then new else k)
                     $ rename old new (type_env s)
                , curr_expr = rename old new (curr_expr s)
-               , name_gen = name_gen s
                , path_conds = rename old new (path_conds s)
                , non_red_path_conds = rename old new (non_red_path_conds s)
                , true_assert = true_assert s
                , assert_ids = rename old new (assert_ids s)
                , type_classes = rename old new (type_classes s)
-               , input_ids = rename old new (input_ids s)
-               , fixed_inputs = rename old new (fixed_inputs s)
                , symbolic_ids = rename old new (symbolic_ids s)
-               , func_table = rename old new (func_table s)
-               , apply_types = rename old new (apply_types s)
-               , deepseq_walkers = rename old new (deepseq_walkers s)
                , exec_stack = rename old new (exec_stack s)
                , model = rename old new (model s)
-               , arb_value_gen = arb_value_gen s
                , known_values = rename old new (known_values s)
-               , cleaned_names = HM.insert new old (cleaned_names s)
                , rules = rules s
                , num_steps = num_steps s
                , track = rename old new (track s)
@@ -217,23 +198,15 @@ instance Named t => Named (State t) where
                     M.mapKeys (renames hm)
                     $ renames hm (type_env s)
                , curr_expr = renames hm (curr_expr s)
-               , name_gen = name_gen s
                , path_conds = renames hm (path_conds s)
                , non_red_path_conds = renames hm (non_red_path_conds s)
                , true_assert = true_assert s
                , assert_ids = renames hm (assert_ids s)
                , type_classes = renames hm (type_classes s)
-               , input_ids = renames hm (input_ids s)
-               , fixed_inputs = renames hm (fixed_inputs s)
                , symbolic_ids = renames hm (symbolic_ids s)
-               , func_table = renames hm (func_table s)
-               , apply_types = renames hm (apply_types s)
-               , deepseq_walkers = renames hm (deepseq_walkers s)
                , exec_stack = renames hm (exec_stack s)
                , model = renames hm (model s)
-               , arb_value_gen = arb_value_gen s
                , known_values = renames hm (known_values s)
-               , cleaned_names = foldr (\(old, new) -> HM.insert new old) (cleaned_names s) (HM.toList hm)
                , rules = rules s
                , num_steps = num_steps s
                , track = renames hm (track s)
@@ -245,8 +218,6 @@ instance ASTContainer t Expr => ASTContainer (State t) Expr where
                       (containedASTs $ curr_expr s) ++
                       (containedASTs $ path_conds s) ++
                       (containedASTs $ assert_ids s) ++
-                      (containedASTs $ input_ids s) ++
-                      (containedASTs $ fixed_inputs s) ++
                       (containedASTs $ symbolic_ids s) ++
                       (containedASTs $ exec_stack s) ++
                       (containedASTs $ track s)
@@ -256,8 +227,6 @@ instance ASTContainer t Expr => ASTContainer (State t) Expr where
                                 , curr_expr = modifyContainedASTs f $ curr_expr s
                                 , path_conds = modifyContainedASTs f $ path_conds s
                                 , assert_ids = modifyContainedASTs f $ assert_ids s
-                                , input_ids = modifyContainedASTs f $ input_ids s
-                                , fixed_inputs = modifyContainedASTs f $ fixed_inputs s
                                 , symbolic_ids = modifyContainedASTs f $ symbolic_ids s
                                 , exec_stack = modifyContainedASTs f $ exec_stack s
                                 , track = modifyContainedASTs f $ track s }
@@ -269,8 +238,6 @@ instance ASTContainer t Type => ASTContainer (State t) Type where
                       ((containedASTs . path_conds) s) ++
                       ((containedASTs . assert_ids) s) ++
                       ((containedASTs . type_classes) s) ++
-                      ((containedASTs . input_ids) s) ++
-                      ((containedASTs . fixed_inputs) s) ++
                       ((containedASTs . symbolic_ids) s) ++
                       ((containedASTs . exec_stack) s) ++
                       (containedASTs $ track s)
@@ -281,11 +248,51 @@ instance ASTContainer t Type => ASTContainer (State t) Type where
                                 , path_conds = (modifyContainedASTs f . path_conds) s
                                 , assert_ids = (modifyContainedASTs f . assert_ids) s
                                 , type_classes = (modifyContainedASTs f . type_classes) s
-                                , input_ids = (modifyContainedASTs f . input_ids) s
-                                , fixed_inputs = (modifyContainedASTs f . fixed_inputs) s
                                 , symbolic_ids = (modifyContainedASTs f . symbolic_ids) s
                                 , exec_stack = (modifyContainedASTs f . exec_stack) s
                                 , track = modifyContainedASTs f $ track s }
+
+instance Named Bindings where
+    names b = names (fixed_inputs b)
+            ++ names (deepseq_walkers b)
+            ++ names (cleaned_names b)
+            ++ names (func_table b)
+            ++ names (apply_types b)
+            ++ names (input_names b)
+
+    rename old new b =
+        Bindings { fixed_inputs = rename old new (fixed_inputs b)
+                 , deepseq_walkers = rename old new (deepseq_walkers b)
+                 , arb_value_gen = arb_value_gen b
+                 , cleaned_names = HM.insert new old (cleaned_names b)
+                 , func_table = rename old new (func_table b)
+                 , apply_types = rename old new (apply_types b)
+                 , input_names = rename old new (input_names b)
+                 , name_gen = name_gen b
+                 }
+
+    renames hm b =
+        Bindings { fixed_inputs = renames hm (fixed_inputs b)
+               , deepseq_walkers = renames hm (deepseq_walkers b)
+               , arb_value_gen = arb_value_gen b
+               , cleaned_names = foldr (\(old, new) -> HM.insert new old) (cleaned_names b) (HM.toList hm)
+               , func_table = renames hm (func_table b)
+               , apply_types = renames hm (apply_types b)
+               , input_names = renames hm (input_names b)
+               , name_gen = name_gen b
+               }
+
+instance ASTContainer Bindings Expr where
+    containedASTs b = (containedASTs $ fixed_inputs b) ++ (containedASTs $ input_names b)
+
+    modifyContainedASTs f b = b { fixed_inputs = modifyContainedASTs f $ fixed_inputs b
+                                , input_names = modifyContainedASTs f $ input_names b }
+
+instance ASTContainer Bindings Type where
+    containedASTs b = ((containedASTs . fixed_inputs) b) ++ ((containedASTs . input_names) b)
+
+    modifyContainedASTs f b = b { fixed_inputs = (modifyContainedASTs f . fixed_inputs) b
+                                , input_names = (modifyContainedASTs f . input_names) b }
 
 instance ASTContainer CurrExpr Expr where
     containedASTs (CurrExpr _ e) = [e]

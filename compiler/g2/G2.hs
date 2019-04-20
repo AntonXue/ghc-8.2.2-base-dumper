@@ -44,7 +44,7 @@ dumpG2 name deps cgguts moddets = do
 
   let g2 = hskToG2ViaCgGuts name_map tyname_map [(cgcc, mdcc)]
 
-  writeFile (g2DumpDir ++ "/" ++ name ++ ".g2i") $ show g2
+  writeFile (g2DumpDir ++ "/" ++ name ++ ".g2-dump") $ show g2
 
   return ()
 

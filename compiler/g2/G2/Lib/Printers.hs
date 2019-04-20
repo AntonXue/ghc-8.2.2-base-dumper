@@ -7,7 +7,8 @@ module G2.Lib.Printers ( mkCleanExprHaskell
                        , ppCurrExpr
                        , ppPathConds
                        , ppPathCond
-                       , pprExecStateStr) where
+                       , pprExecStateStr
+                       , pprExecEEnvStr) where
 
 import G2.Execution.Memory
 import qualified G2.Language.ApplyTypes as AT
@@ -23,7 +24,6 @@ import G2.Language.Syntax
 import G2.Language.Support
 
 import Data.Char
-import Data.Coerce
 import Data.List
 import qualified Data.HashMap.Lazy as HM
 import qualified Data.Map as M
@@ -35,12 +35,12 @@ mkIdHaskell (Id n _) = mkNameHaskell n
 mkNameHaskell :: Name -> String
 mkNameHaskell = T.unpack . nameOcc
 
-mkUnsugaredExprHaskell :: State t -> Expr -> String
-mkUnsugaredExprHaskell (State {apply_types = af, known_values = kv, type_classes = tc}) =
+mkUnsugaredExprHaskell :: State t -> Bindings -> Expr -> String
+mkUnsugaredExprHaskell (State {known_values = kv, type_classes = tc}) (Bindings {apply_types = af}) =
     mkExprHaskell False kv . modifyFix (mkCleanExprHaskell' af kv tc)
 
-mkCleanExprHaskell :: State t -> Expr -> String
-mkCleanExprHaskell (State {apply_types = af, known_values = kv, type_classes = tc}) =
+mkCleanExprHaskell :: State t -> Bindings -> Expr -> String
+mkCleanExprHaskell (State {known_values = kv, type_classes = tc}) (Bindings {apply_types = af}) = 
     mkExprHaskell True kv . modifyFix (mkCleanExprHaskell' af kv tc)
 
 mkCleanExprHaskell' :: AT.ApplyTypes -> KnownValues -> TypeClasses -> Expr -> Expr
@@ -206,43 +206,43 @@ duplicate :: String -> Int -> String
 duplicate _ 0 = ""
 duplicate s n = s ++ duplicate s (n - 1)
 
-ppExprEnv :: State t -> String
-ppExprEnv s@(State {expr_env = eenv}) =
+ppExprEnv :: State t -> Bindings -> String
+ppExprEnv s@(State {expr_env = eenv}) b =
     let
-        eenvs = M.toList $ E.map' (mkUnsugaredExprHaskell s) eenv
+        eenvs = M.toList $ E.map' (mkUnsugaredExprHaskell s b) eenv
     in
     intercalate "\n" $ map (\(n, es) -> mkNameHaskell n ++ " = " ++ es) eenvs
 
 -- | ppRelExprEnv
 -- Prints all variable definitions from the expression environment,
 -- that are required to understand the curr expr and path constraints
-ppRelExprEnv :: State t -> String
-ppRelExprEnv s =
+ppRelExprEnv :: State t -> Bindings -> String
+ppRelExprEnv s b =
     let
-        s' = markAndSweep s
+        (s', b') = markAndSweep s b
     in
-    ppExprEnv s'
+    ppExprEnv s' b'
 
-ppCurrExpr :: State t -> String
-ppCurrExpr s@(State {curr_expr = CurrExpr _ e}) = mkUnsugaredExprHaskell s e
+ppCurrExpr :: State t -> Bindings -> String
+ppCurrExpr s@(State {curr_expr = CurrExpr _ e}) b = mkUnsugaredExprHaskell s b e
 
-ppPathConds :: State t -> String
-ppPathConds s@(State {path_conds = pc}) = intercalate "\n" $ PC.map (ppPathCond s) pc
+ppPathConds :: State t -> Bindings -> String
+ppPathConds s@(State {path_conds = pc}) b = intercalate "\n" $ PC.map (ppPathCond s b) pc
 
-ppPathCond :: State t -> PathCond -> String
-ppPathCond s (AltCond am e b) = mkAltMatchHaskell am ++ (if b then " == " else " /= ") ++ mkUnsugaredExprHaskell s e
-ppPathCond s (ExtCond e b) =
+ppPathCond :: State t -> Bindings -> PathCond -> String
+ppPathCond s binds (AltCond am e b) = mkAltMatchHaskell am ++ (if b then " == " else " /= ") ++ mkUnsugaredExprHaskell s binds e
+ppPathCond s binds (ExtCond e b) =
     let
-        es = mkUnsugaredExprHaskell s e
+        es = mkUnsugaredExprHaskell s binds e
     in
     if b then es else "not (" ++ es ++ ")"
-ppPathCond s (ConsCond dc e b) =
+ppPathCond s binds (ConsCond dc e b) =
     let
         dcs = mkDataConHaskell dc
-        es = mkUnsugaredExprHaskell s e
+        es = mkUnsugaredExprHaskell s binds e
     in
     if b then es ++ " is " ++ dcs else es ++ " is not " ++ dcs
-ppPathCond _ (PCExists i) = "Exists " ++ mkIdHaskell i
+ppPathCond _ _ (PCExists i) = "Exists " ++ mkIdHaskell i
 
 injNewLine :: [String] -> String
 injNewLine strs = intercalate "\n" strs
@@ -251,22 +251,22 @@ injTuple :: [String] -> String
 injTuple strs = "(" ++ (intercalate "," strs) ++ ")"
 
 -- | More raw version of state dumps.
-pprExecStateStr :: State t -> String
-pprExecStateStr ex_state = injNewLine acc_strs
+pprExecStateStr :: State t -> Bindings -> String
+pprExecStateStr ex_state b = injNewLine acc_strs
   where
     eenv_str = pprExecEEnvStr (expr_env ex_state)
     tenv_str = pprTEnvStr (type_env ex_state)
     estk_str = pprExecStackStr (exec_stack ex_state)
     code_str = pprExecCodeStr (curr_expr ex_state)
-    names_str = pprExecNamesStr (name_gen ex_state)
+    names_str = pprExecNamesStr (name_gen b)
     input_str = pprInputIdsStr (symbolic_ids ex_state)
-    funcs_str = pprFuncTableStr (func_table ex_state)
+    funcs_str = pprFuncTableStr (func_table b)
     paths_str = pprPathsStr (PC.toList $ path_conds ex_state)
     non_red_paths_str = injNewLine (map show $ non_red_path_conds ex_state)
     tc_str = pprTCStr (type_classes ex_state)
-    walkers_str = show (deepseq_walkers ex_state)
-    appty_str = show (apply_types ex_state)
-    cleaned_str = pprCleanedNamesStr (cleaned_names ex_state)
+    walkers_str = show (deepseq_walkers b)
+    appty_str = show (apply_types b)
+    cleaned_str = pprCleanedNamesStr (cleaned_names b)
     model_str = pprModelStr (model ex_state)
     rules_str = intercalate "\n" $ map show (zip ([0..] :: [Integer]) $ rules ex_state)
     acc_strs = [ ">>>>> [State] >>>>>>>>>>>>>>>>>>>>>"
@@ -344,7 +344,7 @@ pprPathsStr paths = injNewLine cond_strs
 pprTCStr :: TypeClasses -> String
 pprTCStr tc = injNewLine cond_strs
   where
-    cond_strs = map show $ M.toList $ ((coerce tc) :: M.Map Name Class)
+    cond_strs = map show $ M.toList $ toMap tc
 
 pprInputIdsStr :: InputIds -> String
 pprInputIdsStr i = injNewLine id_strs

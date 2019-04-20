@@ -26,7 +26,7 @@ instance Named t => Named (ExecRes t) where
       ExecRes { final_state = rename old new s
               , conc_args = rename old new es
               , conc_out = rename old new r
-              , violated = rename old new fc }
+              , violated = rename old new fc}
 
     renames hm (ExecRes { final_state = s
                         , conc_args = es
@@ -51,7 +51,7 @@ instance ASTContainer t Expr => ASTContainer (ExecRes t) Expr where
         ExecRes { final_state = modifyContainedASTs f s
                 , conc_args = modifyContainedASTs f es
                 , conc_out = modifyContainedASTs f r
-                , violated = modifyContainedASTs f fc }
+                , violated = modifyContainedASTs f fc}
 
 instance ASTContainer t Type => ASTContainer (ExecRes t) Type where
     containedASTs (ExecRes { final_state = s

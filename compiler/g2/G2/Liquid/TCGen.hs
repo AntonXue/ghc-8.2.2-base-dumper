@@ -9,24 +9,23 @@ import G2.Liquid.Conversion
 import G2.Liquid.TCValues
 import G2.Liquid.Types
 
-import Data.Coerce
 import Data.Foldable
 import qualified Data.Map as M
 import qualified Data.Text as T
 
 -- | Creates an LHState.  This involves building a TCValue, and
 -- creating the new LH TC which checks equality, and has a function to
--- check refinements of polymophic types
-createLHState :: Measures -> KnownValues -> State [FuncCall] -> LHState
-createLHState meenv mkv s =
+-- check refinements of polymorphic types
+createLHState :: Measures -> KnownValues -> State [FuncCall] -> Bindings -> (LHState, Bindings)
+createLHState meenv mkv s b =
     let
-        (tcv, s') = runStateM (createTCValues mkv) s
+        (tcv, (s', b')) = runStateM (createTCValues mkv) s b
 
         lh_s = consLHState s' meenv tcv
     in
     execLHStateM (do
                     createLHTCFuncs
-                    createExtractors) lh_s
+                    createExtractors) lh_s b'
     
 
 createTCValues :: KnownValues -> StateM [FuncCall] TCValues
@@ -90,7 +89,7 @@ createLHTCFuncs = do
     tc <- typeClasses
     tcn <- lhTCM
     tci <- freshIdN TYPE
-    let tc' = coerce . M.insert tcn (Class { insts = lhtc, typ_ids = [tci] }) $ coerce tc
+    let tc' = insertClass tcn (Class { insts = lhtc, typ_ids = [tci] }) tc
     putTypeClasses tc'
 
     -- Now, we do the work of actually generating all the code/functions for the typeclass

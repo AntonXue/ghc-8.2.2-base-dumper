@@ -5,6 +5,7 @@ module G2.Liquid.ConvertCurrExpr (convertCurrExpr) where
 
 import G2.Language
 import G2.Language.Monad
+import qualified G2.Language.ExprEnv as E
 
 import G2.Liquid.Conversion
 import G2.Liquid.Types
@@ -13,10 +14,10 @@ import Control.Monad.Extra
 import qualified Data.Map as M
 import Data.Maybe
 
-convertCurrExpr :: Id -> LHStateM [Name]
-convertCurrExpr ifi = do
+convertCurrExpr :: Id -> Bindings -> LHStateM [Name]
+convertCurrExpr ifi bindings = do
     ifi' <- modifyInputExpr ifi
-    addCurrExprAssumption ifi
+    addCurrExprAssumption ifi bindings
     return ifi'
 
 -- We create a copy of the input function which is modified to:
@@ -103,16 +104,18 @@ letLiftFuncs' e
 -- We add an assumption about the inputs to the current expression
 -- This prevents us from finding a violation of the output refinement type
 -- that requires a violation of the input refinement type
-addCurrExprAssumption :: Id -> LHStateM ()
-addCurrExprAssumption ifi = do
+addCurrExprAssumption :: Id -> Bindings -> LHStateM ()
+addCurrExprAssumption ifi (Bindings {fixed_inputs = fi}) = do
     (CurrExpr er ce) <- currExpr
 
     assumpt <- lookupAssumptionM (idName ifi)
-    fi <- fixedInputs
-    is <- inputIds
+    -- fi <- fixedInputs
+    eenv <- exprEnv
+    inames <- inputNames
 
     lh <- mapM (lhTCDict' M.empty) $ mapMaybe typeType fi
 
+    let is = catMaybes (map (E.getIdFromName eenv) inames)   
     let (typs, ars) = span isType $ fi ++ map Var is
 
     case assumpt of
