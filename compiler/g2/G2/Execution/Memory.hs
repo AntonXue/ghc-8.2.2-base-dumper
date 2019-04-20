@@ -6,10 +6,13 @@ module G2.Execution.Memory
 import G2.Language.Syntax
 import G2.Language.Support
 import G2.Language.Naming
-import G2.Language.ExprEnv as E
+import qualified G2.Language.ExprEnv as E
+import G2.Language.Typing
 
+import Data.List
 import qualified Data.HashSet as S
 import qualified Data.Map as M
+
 
 markAndSweep :: State t -> Bindings -> (State t, Bindings)
 markAndSweep = markAndSweepPreserving []
@@ -20,15 +23,14 @@ markAndSweepPreserving ns (state@State { expr_env = eenv
                                        , curr_expr = cexpr
                                        , path_conds = pc
                                        , symbolic_ids = iids
-                                       -- , deepseq_walkers = dsw
                                        , exec_stack = es
                                        , known_values = kv
-                                       }) (bindings@Bindings {deepseq_walkers = dsw}) = -- error $ show $ length $ take 20 $ PC.toList path_conds
+                                       }) (bindings@Bindings { deepseq_walkers = dsw
+                                                             , higher_order_inst = inst }) = -- error $ show $ length $ take 20 $ PC.toList path_conds
                                (state', bindings')
   where
     state' = state { expr_env = eenv'
                    , type_env = tenv'
-                   --, deepseq_walkers = dsw'
                    }
     bindings' = bindings { deepseq_walkers = dsw'}
 
@@ -37,6 +39,7 @@ markAndSweepPreserving ns (state@State { expr_env = eenv
                                                    names pc ++
                                                    names kv ++
                                                    names iids ++
+                                                   higher_ord_rel ++
                                                    ns
 
     isActive :: Name -> Bool
@@ -46,6 +49,10 @@ markAndSweepPreserving ns (state@State { expr_env = eenv
     tenv' = M.filterWithKey (\n _ -> isActive n) tenv
 
     dsw' = M.filterWithKey (\n _ -> isActive n) dsw
+
+    higher_ord_eenv = E.filterWithKey (\n _ -> n `elem` inst) eenv
+    higher_ord = map PresType $ nubBy (.::.) $ argTypesTEnv tenv ++ E.higherOrderExprs higher_ord_eenv
+    higher_ord_rel = E.keys $ E.filter (\e -> any (.:: typeOf e) higher_ord) higher_ord_eenv
 
 activeNames :: TypeEnv -> ExprEnv -> S.HashSet Name -> [Name] -> S.HashSet Name
 activeNames _ _ explored [] = explored

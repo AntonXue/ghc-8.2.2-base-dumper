@@ -29,6 +29,8 @@ import G2.Solver hiding (Assert)
 
 import Control.Monad.Extra
 import Data.Maybe
+import qualified Data.List as L
+import qualified Data.Map as M
 
 stdReduce :: Solver solver => solver -> State t -> Bindings -> IO (Rule, [(State t, ())], Bindings)
 stdReduce solver s b@(Bindings {name_gen = ng}) = do
@@ -148,7 +150,8 @@ evalApp s@(State { expr_env = eenv
                  , known_values = kv
                  , exec_stack = stck })
         ng e1 e2
-    | (App (Prim BindFunc _) (Var i1)) <- e1
+    | (App (Prim BindFunc _) v) <- e1
+    , Var i1 <- findSym v
     , v2 <- e2 =
         ( RuleBind
         , [s { expr_env = E.insert (idName i1) v2 eenv
@@ -176,6 +179,11 @@ evalApp s@(State { expr_env = eenv
         , [s { curr_expr = CurrExpr Evaluate e1
              , exec_stack = stck' }]
         , ng)
+    where
+        findSym v@(Var (Id n _))
+          | E.isSymbolic n eenv = v
+          | Just e <- E.lookup n eenv = findSym e
+        findSym _ = error "findSym: No symbolic variable"
 
 lookupForPrim :: ExprEnv -> Expr -> Expr
 lookupForPrim eenv v@(Var (Id _ _)) = repeatedLookup eenv v
@@ -312,8 +320,20 @@ evalCase s@(State { expr_env = eenv
   , lalts <- litAlts alts
   , defs <- defaultAlts alts
   , (length dalts + length lalts + length defs) > 0 =
-      let
-          (dsts_cs, ng') = liftSymDataAlt s ng mexpr bind dalts
+      let 
+          (dsts_cs, ng') = case mexpr of
+            (Cast e c) -> case unApp $ unsafeElimCast e of
+                (Var i):_ -> concretizeVarExpr s ng i bind dalts (Just c)
+                (Lit _):_ -> ([], ng)
+                (Data _):_ -> ([], ng)
+                _ -> error $ "unmatched expr" ++ show (unApp $ unsafeElimCast e)
+            _ -> case unApp $ unsafeElimCast mexpr of
+                (Var i):_ -> concretizeVarExpr s ng i bind dalts Nothing
+                (Prim _ _):_ -> createExtConds s ng mexpr bind dalts
+                (Lit _):_ -> ([], ng)
+                (Data _):_ -> ([], ng)
+                _ -> error $ "unmatched expr" ++ show (unApp $ unsafeElimCast mexpr)
+
           lsts_cs = liftSymLitAlt s mexpr bind lalts
           def_sts = liftSymDefAlt s mexpr bind alts
       in
@@ -374,51 +394,151 @@ defaultAlts alts = [a | a @ (Alt Default _) <- alts]
 -- | Lift positive datacon `State`s from symbolic alt matching. This in
 -- part involves erasing all of the parameters from the environment by rename
 -- their occurrence in the aexpr to something fresh.
-liftSymDataAlt :: State t -> NameGen -> Expr -> Id -> [(DataCon, [Id], Expr)] -> ([NewPC t], NameGen)
-liftSymDataAlt _ ng _ _ [] = ([], ng)
-liftSymDataAlt s ng mexpr cvar (x:xs) = 
+concretizeVarExpr :: State t -> NameGen -> Id -> Id -> [(DataCon, [Id], Expr)] -> Maybe Coercion -> ([NewPC t], NameGen)
+concretizeVarExpr _ ng _ _ [] _ = ([], ng)
+concretizeVarExpr s ng mexpr_id cvar (x:xs) maybeC = 
         (x':newPCs, ng'') 
     where
-        (x', ng') = liftSymDataAlt' s ng mexpr cvar x
-        (newPCs, ng'') = liftSymDataAlt s ng' mexpr cvar xs
+        (x', ng') = concretizeVarExpr' s ng mexpr_id cvar x maybeC
+        (newPCs, ng'') = concretizeVarExpr s ng' mexpr_id cvar xs maybeC
 
-liftSymDataAlt' :: State t -> NameGen -> Expr -> Id -> (DataCon, [Id], Expr) -> (NewPC t, NameGen)
-liftSymDataAlt' s@(State { expr_env = eenv })
-                ngen mexpr cvar (dcon, params, aexpr) =
-        (NewPC { state = res, new_pcs = [cond'] }, ngen')
+concretizeVarExpr' :: State t -> NameGen -> Id -> Id -> (DataCon, [Id], Expr) -> Maybe Coercion -> (NewPC t, NameGen)
+concretizeVarExpr' s@(State {expr_env = eenv, type_env = tenv, symbolic_ids = syms})
+                ngen mexpr_id cvar (dcon, params, aexpr) maybeC = 
+          (newPCEmpty $ s { expr_env = eenv''
+                          , symbolic_ids = syms'
+                          , curr_expr = CurrExpr Evaluate aexpr''}, ngen')
   where
-
     -- Make sure that the parameters do not conflict in their symbolic reps.
     olds = map idName params
+
     -- [ChildrenNames]
     -- Optimization
     -- We use the same names repeatedly for the children of the same ADT
     -- Haskell is purely functional, so this is OK!  The children can't change
     -- Then, in the constraint solver, we can consider fewer constraints at once
     -- (see note [AltCond] in Language/PathConds.hs) 
-    (news, ngen') = case exprInCasts mexpr of
-        (Var (Id n _)) -> childrenNames n olds ngen
-        _ -> freshSeededNames olds ngen
+    mexpr_n = idName mexpr_id
+    (news, ngen') = childrenNames mexpr_n olds ngen
 
-    newparams = map (uncurry Id) $ zip news (map typeOf params)
-
-    -- Condition that was matched.
-    cond = AltCond (DataAlt dcon newparams) mexpr True
-
-    -- (news, ngen') = freshSeededNames olds ngen
 
     --Update the expr environment
     newIds = map (\(Id _ t, n) -> (n, Id n t)) (zip params news)
     eenv' = foldr (uncurry E.insertSymbolic) eenv newIds
 
-    (cond', aexpr') = renameExprs (zip olds news) (cond, aexpr)
+    (dcon', aexpr') = renameExprs (zip olds news) (Data dcon, aexpr)
+
+    newparams = map (uncurry Id) $ zip news (map typeOf params)
+    dConArgs = (map (Var) newparams)
+    -- Get list of Types to concretize polymorphic data constructor
+    mexpr_t = (\(Id _ t) -> t) (mexpr_id)
+    exprs = [dcon'] ++ (dconTyToExprType mexpr_t tenv) ++ dConArgs
+    -- exprs = [dcon'] ++ (typeToExpr mexpr_t) ++ dConArgs
+
+    -- Apply list of types (if present) and DataCon children to DataCon
+    dcon'' = mkApp exprs
+
+    -- Apply cast, in opposite direction of unsafeElimCast
+    dcon''' = case maybeC of 
+                (Just (t1 :~ t2)) -> Cast dcon'' (t2 :~ t1)
+                Nothing -> dcon''
+
+    syms' = newparams ++ (filter (/= mexpr_id) syms)
+
+    -- concretizes the mexpr to have same form as the DataCon specified
+    eenv'' = E.insert mexpr_n dcon''' eenv' 
+
+    -- Now do a round of rename for binding the cvar.
+    binds = [(cvar, (Var mexpr_id))]
+    aexpr'' = liftCaseBinds binds aexpr'
+
+-- | Ugly solution, todo: improve
+
+-- given the type of a DataCon, looks for type in the Type_Env, and returns Expr level representation of the Type arguments to the DataCon based on the
+-- Type_Env
+dconTyToExprType :: Type -> TypeEnv -> [Expr]
+dconTyToExprType mexpr_t tenv = let
+    maybeADT = getCastedAlgDataTyNew mexpr_t tenv
+    in
+        case maybeADT of
+            (Just (adt, bindings)) -> case adt of
+                NewTyCon {data_con = dcon} -> dconTyToExpr dcon bindings
+                DataTyCon {} -> typeToExpr mexpr_t -- from Language/Typing.hs
+                _ -> []
+            Nothing -> []
+
+getCastedAlgDataTyNew :: Type -> TypeEnv -> Maybe (AlgDataTy, [(Id, Type)])
+getCastedAlgDataTyNew t tenv
+    | TyCon n _ <- tyAppCenter t
+    , ts <- tyAppArgs t = getCastedAlgDataTyNew' n ts tenv
+    | otherwise = Nothing
+
+getCastedAlgDataTyNew' :: Name -> [Type] -> TypeEnv -> Maybe (AlgDataTy, [(Id, Type)])
+getCastedAlgDataTyNew' n ts tenv =
+        case M.lookup n tenv of
+            Just dc@(NewTyCon {bound_ids = bi}) -> Just (dc, zip bi ts)
+            Just dc@(DataTyCon { bound_ids = bi }) -> Just (dc, zip bi ts)
+            _ -> Nothing
+
+-- Given DataCon, and mapping from Ids to Types, returns list of Expression level Type Arguments to DataCon
+dconTyToExpr :: DataCon -> [(Id, Type)] -> [Expr]
+dconTyToExpr (DataCon _ t) bindings =
+    case (getTyApps t) of
+        (Just tApps) -> getTyArgs tApps bindings
+        Nothing -> []
+
+getTyApps :: Type -> Maybe Type
+getTyApps (TyForAll _ t) = getTyApps t
+getTyApps (TyFun t _) = getTyApps t
+getTyApps t@(TyApp _ _) = Just t
+getTyApps _ = Nothing -- what about TyCon
+
+-- given sequence of nested tyApp e.g. tyApp (tyApp ...) ...), returns list of expr level Types, searching through [Id,Type] list in the process
+getTyArgs :: Type -> [(Id, Type)] -> [Expr]
+getTyArgs (TyApp t (TyVar tVarId)) bindings = exprs ++ newTyExpr
+    where
+        newTyExpr = case (L.find (\(i, _) -> (tVarId == i)) bindings) of -- search list of (Id, Type) to find corresponding Type, and convert to expr
+            (Just (_, ty)) -> [Type ty]
+            Nothing -> []
+        exprs = getTyArgs t bindings
+getTyArgs (TyApp t1 t2) bindings = exprs ++ newTyExpr
+    where
+        newTyExpr = [Type t2]
+        exprs = getTyArgs t1 bindings
+getTyArgs _ _ = []
+                                           
+
+createExtConds :: State t -> NameGen -> Expr -> Id -> [(DataCon, [Id], Expr)] -> ([NewPC t], NameGen)
+createExtConds _ ng _ _ [] = ([], ng)
+createExtConds s ng mexpr cvar (x:xs) = 
+        (x':newPCs, ng'') 
+    where
+        (x', ng') = createExtCond s ng mexpr cvar x
+        (newPCs, ng'') = createExtConds s ng' mexpr cvar xs
+
+createExtCond :: State t -> NameGen -> Expr -> Id -> (DataCon, [Id], Expr) -> (NewPC t, NameGen)
+createExtCond s ngen mexpr cvar (dcon, _, aexpr) =
+        (NewPC { state = res, new_pcs = [cond] }, ngen)
+  where
+    -- Get the Bool value specified by the matching DataCon
+    -- Throws an error if dcon is not a Bool Data Constructor
+    boolValue = getBoolFromDataCon s dcon
+    cond = ExtCond mexpr boolValue
 
     -- Now do a round of rename for binding the cvar.
     binds = [(cvar, mexpr)]
-    aexpr'' = liftCaseBinds binds aexpr'
-    res = s { expr_env = eenv'
-            , curr_expr = CurrExpr Evaluate aexpr''}
+    aexpr' = liftCaseBinds binds aexpr
+    res = s {curr_expr = CurrExpr Evaluate aexpr'}
 
+getBoolFromDataCon :: State t -> DataCon -> Bool
+getBoolFromDataCon (State {known_values = kv}) dcon
+    | (DataCon dconName dconType) <- dcon
+    , dconType == (tyBool kv)
+    , dconName == (KV.dcTrue kv) = True
+    | (DataCon dconName dconType) <- dcon
+    , dconType == (tyBool kv)
+    , dconName == (KV.dcFalse kv) = False
+    | otherwise = error $ "getBoolFromDataCon: invalid DataCon passed in\n" ++ show dcon ++ "\n"
 
 liftSymLitAlt :: State t -> Expr -> Id -> [(Lit, Expr)] -> [NewPC t]
 liftSymLitAlt s mexpr cvar = map (liftSymLitAlt' s mexpr cvar)
@@ -429,7 +549,7 @@ liftSymLitAlt' s mexpr cvar (lit, aexpr) =
     NewPC { state = res, new_pcs = [cond] }
   where
     -- Condition that was matched.
-    cond = AltCond (LitAlt lit) mexpr True
+    cond = AltCond lit mexpr True
     -- Bind the cvar.
     binds = [(cvar, Lit lit)]
     aexpr' = liftCaseBinds binds aexpr
@@ -462,7 +582,7 @@ defAltExpr (_:xs) = defAltExpr xs
 
 liftSymDefAltPCs :: Expr -> AltMatch -> Maybe PathCond
 liftSymDefAltPCs mexpr (DataAlt dc _) = Just $ ConsCond dc mexpr False
-liftSymDefAltPCs mexpr lit@(LitAlt _) = Just $ AltCond lit mexpr False
+liftSymDefAltPCs mexpr (LitAlt lit) = Just $ AltCond lit mexpr False
 liftSymDefAltPCs _ Default = Nothing
 
 evalCast :: State t -> NameGen -> Expr -> Coercion -> (Rule, [State t], NameGen)

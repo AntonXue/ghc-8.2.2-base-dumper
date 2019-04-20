@@ -41,6 +41,7 @@ module G2.Language.Typing
     , argTypeToType
     , argTypeToLamUse
     , spArgumentTypes
+    , leadingTyForAllBindings
     , tyForAllBindings
     , anonArgumentTypes
     , returnType
@@ -50,8 +51,8 @@ module G2.Language.Typing
     , retype
     , mapInTyForAlls
     , inTyForAlls
-
     , numTypeArgs
+    , typeToExpr
     ) where
 
 import G2.Language.AST
@@ -228,7 +229,7 @@ instance Typed Type where
     typeOf' _ TyBottom = TyBottom
     typeOf' _ TyUnknown = TyUnknown
 
-newtype PresType = PresType Type
+newtype PresType = PresType Type deriving (Show, Read)
 
 instance Typed PresType where
     typeOf' _ (PresType t) = t
@@ -443,6 +444,13 @@ spArgumentTypes' (TyForAll (NamedTyBndr i) t2) = NamedType i:spArgumentTypes' t2
 spArgumentTypes' (TyFun t1 t2) = AnonType t1:spArgumentTypes' t2
 spArgumentTypes' _ = []
 
+leadingTyForAllBindings :: Typed t => t -> [Id]
+leadingTyForAllBindings = leadingTyForAllBindings' . typeOf
+
+leadingTyForAllBindings' :: Type -> [Id]
+leadingTyForAllBindings' (TyForAll (NamedTyBndr i) t) = i:leadingTyForAllBindings' t
+leadingTyForAllBindings' _ = []
+
 tyForAllBindings :: Typed t => t -> [Id]
 tyForAllBindings = tyForAllBindings' . typeOf
 
@@ -504,3 +512,10 @@ numTypeArgs = numTypeArgs' . typeOf
 numTypeArgs' :: Type -> Int
 numTypeArgs' (TyForAll (NamedTyBndr _) t) = 1 + numTypeArgs' t
 numTypeArgs' _ = 0
+
+-- | Converts nested TyApps into a list of Expr-level Types
+typeToExpr :: Type -> [Expr]
+typeToExpr (TyApp f t) = [Type t] ++ (typeToExpr f)
+typeToExpr _ = []
+
+

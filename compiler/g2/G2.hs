@@ -37,12 +37,18 @@ g2DumpDir = "/home/celery/Desktop/ghc-dump-dir"
 dumpG2 :: String -> Dependencies -> CgGuts -> ModDetails -> IO ()
 dumpG2 name deps cgguts moddets = do
 
-  let name_map = HM.empty
-  let tyname_map = HM.empty
-  let cgcc = mkCgGutsClosure cgguts
+  let nameMap = HM.empty
+  let tyNameMap = HM.empty
+  -- TODO: Figure out how to preserve rewrite rules in this pass
+  -- see G2/Translation/Haskell.hs for info about mkCgGutsClosure
+  let cgcc = mkCgGutsClosure (cg_binds cgguts) cgguts
   let mdcc = mkModDetailsClosure deps moddets
 
-  let g2 = hskToG2ViaCgGuts name_map tyname_map [(cgcc, mdcc)]
+  let g2 = hskToG2ViaCgGuts
+              nameMap
+              tyNameMap
+              [(cgcc, mdcc)]
+              simplTranslationConfig
 
   writeFile (g2DumpDir ++ "/" ++ name ++ ".g2-dump") $ show g2
 
