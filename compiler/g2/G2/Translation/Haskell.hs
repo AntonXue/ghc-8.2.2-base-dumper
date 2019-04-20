@@ -462,7 +462,9 @@ mkLit (MachWord64 i) = G2.LitInt (fromInteger i)
 mkLit (MachFloat rat) = G2.LitFloat rat
 mkLit (MachDouble rat) = G2.LitDouble rat
 mkLit (LitInteger i _) = G2.LitInteger (fromInteger i)
-mkLit _ = error "mkLit: unhandled Lit"
+mkLit (MachNullAddr) = G2.LitInt (fromInteger 0)
+mkLit (MachLabel fs maybeInt funOrData) = G2.LitInt (fromInteger 0)
+-- mkLit _ = error "mkLit: unhandled Lit"
 -- mkLit (MachNullAddr) = error "mkLit: MachNullAddr"
 -- mkLit (MachLabel _ _ _ ) = error "mkLit: MachLabel"
 
