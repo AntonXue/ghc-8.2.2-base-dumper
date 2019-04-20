@@ -1,37 +1,37 @@
 Hey Bill, to get GHC dumping G2 correctly a few things here are different.
 You can always diff it against the "fresh download" to detect differences
 
-  commit: `ad62ae2c52fc44e0a88a24201c143a02560a4eca`
+  commit: ad62ae2c52fc44e0a88a24201c143a02560a4eca
 
 All in all, very few GHC files were modified. Most of the additions were
-shoving the right things into the `compiler/g2` directory.
+shoving the right things into the compiler/g2 directory.
 
 GHC side:
 ---------
-  1. Modify `compiler/ghc.cabal.in` to depend on the G2 libraries are used
-  2. Modify `compiler/main/DriverPipeline.hs` and
-            `compiler/main/PipelineMonad.hs` to inject dumping cgguts
+  1. Modify compiler/ghc.cabal.in to depend on the G2 libraries are used
+  2. Modify compiler/main/DriverPipeline.hs and
+            compiler/main/PipelineMonad.hs to inject dumping cgguts
 
 G2 side:
 --------
-  1. Download fresh copy of G2 into `compiler/g2/G2`.
+  1. Download fresh copy of G2 into compiler/g2/G2.
 
 
 Important things to note:
 -------------------------
   1. In order to correctly snapshot everything with git, make sure that
-      all the submodules DO NOT have their `.git` files.
+      all the submodules DO NOT have their .git files.
   2. The sequence of commands to dump is to:
       
-      `./boot`
-      `./configure`
-      `make -j4`
+      ./boot
+      ./configure
+      make -j4
 
-     Here I use `-j4` because I have four cores I can use. You can drop
-     the `-j4` flag completely or use something else.
-  3. The default dump location is `/home/celery/Desktop/ghc-dump-dir`,
-     as can be seen in `compiler/g2/G2.hs`. This is also the primary file
-     that acts as a bridge between GHC and G2, via the `dumpG2` function.
+     Here I use -j4 because I have four cores I can use. You can drop
+     the -j4 flag completely or use something else.
+  3. The default dump location is /home/celery/Desktop/ghc-dump-dir,
+     as can be seen in compiler/g2/G2.hs. This is also the primary file
+     that acts as a bridge between GHC and G2, via the dumpG2 function.
 
 
 
